@@ -1,0 +1,139 @@
+# inspired by https://github.com/guysoft/OctoPi/blob/devel/.github/workflows/build.yml
+name: octoprint-lpi3h-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      owner:
+        description: 'Owner of the repository to download artifact from'
+        default: ''
+        required: true
+        type: string
+      repo:
+        description: 'Repository to download artifact from'
+        default: ''
+        required: true
+        type: string
+      ref:
+        description: 'Ref to download artifact from'
+        default: ''
+        required: true
+        type: string
+      artifact_id:
+        description: 'Artifact id to download'
+        default: ''
+        required: true
+        type: string
+      artifact_name:
+        description: 'Artifact name to download'
+        default: ''
+        required: true
+        type: string
+      run_id:
+        description: 'Run ID to download'
+        default: ''
+        required: true
+        type: string
+      # This trigger only receives events when the workflow file is on the default branch.
+    # https://github.com/actions/github-script/issues/128
+  workflow_call:
+    inputs:
+      artifact_id:
+        description: 'Artifact name to download'
+        required: true
+        default: ''
+        type: string
+  
+env:
+  ARCH: arm64
+  BOARD: lpi3h  # Set this to your desired board name
+  BUILD_ID: ${{ github.run_id }}  # This sets a unique build ID based on the GitHub run ID
+  ARTIFACT_ID: ${{ github.event.inputs.artifact_id }}
+  ARTIFACT_NAME: ${{ github.event.inputs.artifact_name }}
+  RUN_ID: ${{ github.event.inputs.run_id }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    steps:
+      # output the artifact
+      - name: Artifact Info
+        run: |-
+          echo "env.ARTIFACT_ID: ${{ env.ARTIFACT_ID }}"
+          echo "env.ARTIFACT_NAME: ${{ env.ARTIFACT_NAME }}"
+          echo "env.RUN_ID: ${{ env.RUN_ID }}"
+          echo "github.RUN_ID: ${{ github.run_id }}"
+      
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install coreutils p7zip-full qemu-user-static
+
+      - name: Checkout CustomPiOS
+        uses: actions/checkout@v2
+        with:
+          repository: 'guysoft/CustomPiOS'
+          path: CustomPiOS
+
+
+      - name: Checkout Project Repository (OctoPi)
+        uses: actions/checkout@v2
+        with:
+          repository: 'elasticdotventures/octopi-longan-pi3h'
+          path: repository
+          submodules: true
+
+      - name: Download Longan Pi3H Image Artifact
+        uses: actions/download-artifact@v4
+        with:
+          repository: ${{ github.event.inputs.owner }}/${{ github.event.inputs.repo }}
+          name: ${{ env.ARTIFACT_NAME }}
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # this should pull+unzip the artifact, so sdcard.img.xz and sdcard.img.xz.sha512 will be present. 
+
+      - name: Unzip and move downloaded image
+        run: |
+          mkdir -p OctoPi/src/image
+          # not sure which is correct
+          cp sdcard.img.xz repository/src/image/sdcard-raspios.img.xz
+          cp sdcard.img.xz OctoPi/src/image/sdcard-raspios.img.xz
+  
+      - name: Display structure of downloaded files
+        run: |
+          pwd
+          ls -R
+
+      - name: Update CustomPiOS Paths
+        run: |
+          cd repository/src
+          ../../CustomPiOS/src/update-custompios-paths
+
+      # - name: Force apt mirror to work around intermittent mirror hiccups
+      #   run: |
+      #     echo "OCTOPI_APTMIRROR=http://mirror.us.leaseweb.net/raspbian/raspbian" > repository/src/config.local
+
+      - name: Build Image
+        run: |
+          sudo modprobe loop
+          cd repository/src
+          sudo bash -x ./build_dist
+
+      - name: Copy output
+        id: copy
+        run: |
+          source repository/src/config
+          NOW=$(date +"%Y-%m-%d-%H%M")
+          IMAGE=$NOW-octopi-$DIST_VERSION
+
+          cp repository/src/workspace/*.img $IMAGE.img
+
+          echo "::set-output name=image::$IMAGE"
+
+      # artifact upload will take care of zipping for us
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{ steps.copy.outputs.image }}
+          path: ${{ steps.copy.outputs.image }}.img
+
